@@ -1,0 +1,108 @@
+import os
+
+# File to store inventory data
+INVENTORY_FILE = "inventory.txt"
+
+# ------------------ Helper Functions ------------------
+
+# Load inventory from file
+def load_inventory():
+    inventory = {}
+    if os.path.exists(INVENTORY_FILE):
+        with open(INVENTORY_FILE, "r") as file:
+            for line in file:
+                data = line.strip().split(",")
+                if len(data) == 3:
+                    pid, name, qty = data
+                    inventory[pid] = {"name": name, "quantity": int(qty)}
+    return inventory
+
+# Save inventory to file
+def save_inventory(inventory):
+    with open(INVENTORY_FILE, "w") as file:
+        for pid, details in inventory.items():
+            file.write(f"{pid},{details['name']},{details['quantity']}\n")
+
+# ------------------ Main Operations ------------------
+
+def add_product(inventory):
+    pid = input("Enter Product ID: ")
+    if pid in inventory:
+        print("Product ID already exists!")
+        return
+    name = input("Enter Product Name: ")
+    qty = int(input("Enter Quantity: "))
+    inventory[pid] = {"name": name, "quantity": qty}
+    print("✅ Product added successfully!")
+
+def view_inventory(inventory):
+    if not inventory:
+        print("📂 Inventory is empty.")
+        return
+    print("\n---- INVENTORY LIST ----")
+    print("ID\tName\tQuantity")
+    print("----------------------------")
+    for pid, details in inventory.items():
+        print(f"{pid}\t{details['name']}\t{details['quantity']}")
+
+def update_quantity(inventory):
+    pid = input("Enter Product ID to update: ")
+    if pid in inventory:
+        qty = int(input("Enter New Quantity: "))
+        inventory[pid]["quantity"] = qty
+        print("✅ Quantity updated successfully!")
+    else:
+        print("❌ Product not found.")
+
+def delete_product(inventory):
+    pid = input("Enter Product ID to delete: ")
+    if pid in inventory:
+        del inventory[pid]
+        print("✅ Product deleted successfully!")
+    else:
+        print("❌ Product not found.")
+
+def search_product(inventory):
+    name = input("Enter product name to search: ").lower()
+    found = False
+    for pid, details in inventory.items():
+        if name in details["name"].lower():
+            print(f"✅ Found: ID={pid}, Name={details['name']}, Quantity={details['quantity']}")
+            found = True
+    if not found:
+        print("❌ No matching product found.")
+
+# ------------------ Main Program ------------------
+
+def main():
+    inventory = load_inventory()
+
+    while True:
+        print("\n------ INVENTORY MANAGEMENT SYSTEM ------")
+        print("1. Add Product")
+        print("2. View Inventory")
+        print("3. Update Quantity")
+        print("4. Delete Product")
+        print("5. Search Product")
+        print("6. Exit")
+        choice = input("Enter your choice (1-6): ")
+
+        if choice == "1":
+            add_product(inventory)
+        elif choice == "2":
+            view_inventory(inventory)
+        elif choice == "3":
+            update_quantity(inventory)
+        elif choice == "4":
+            delete_product(inventory)
+        elif choice == "5":
+            search_product(inventory)
+        elif choice == "6":
+            save_inventory(inventory)
+            print("💾 Data saved. Exiting program...")
+            break
+        else:
+            print("⚠️ Invalid choice. Please try again.")
+
+if __name__ == "__main__":
+    main()
