@@ -1,0 +1,371 @@
+import sqlite3
+from datetime import datetime, timedelta
+
+class DatabaseManager:
+    def __init__(self, db_name='library.db'):
+        self.conn = sqlite3.connect(db_name)
+        self.cursor = self.conn.cursor()
+
+    def create_tables(self):
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS Books (
+                BookID INTEGER PRIMARY KEY,
+                Title TEXT,
+                Author TEXT,
+                Genre TEXT,
+                Quantity INTEGER
+            )
+        ''')
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS Members (
+                MemberID TEXT PRIMARY KEY,
+                Name TEXT,
+                Role TEXT
+            )
+        ''')
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS Transactions (
+                TransactionID INTEGER PRIMARY KEY AUTOINCREMENT,
+                MemberID TEXT,
+                BookID INTEGER,
+                IssueDate TEXT,
+                ReturnDate TEXT,
+                ActualReturnDate TEXT,
+                Fine INTEGER DEFAULT 0,
+                Extended INTEGER DEFAULT 0,
+                FOREIGN KEY(MemberID) REFERENCES Members(MemberID),
+                FOREIGN KEY(BookID) REFERENCES Books(BookID)
+            )
+        ''')
+        self.conn.commit()
+        print("Tables created.")
+
+    def insert_book(self, book_id, title, author, genre, quantity):
+        self.cursor.execute('''
+            INSERT INTO Books (BookID, Title, Author, Genre, Quantity)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (book_id, title, author, genre, quantity))
+        self.conn.commit()
+
+    def register_member(self, member_id, name, role, passkey=None):
+        if role == 'staff' and not (member_id.startswith('LIB') and passkey == "LIBSTAFF2024"):
+            print("Invalid staff ID format or wrong passkey.")
+            return False
+        if role == 'member' and not member_id.isdigit():
+            print("Member ID must be numeric.")
+            return False
+        self.cursor.execute('SELECT * FROM Members WHERE MemberID = ?', (member_id,))
+        if self.cursor.fetchone():
+            print("ID already exists.")
+            return False
+        self.cursor.execute('''
+            INSERT INTO Members (MemberID, Name, Role)
+            VALUES (?, ?, ?)
+        ''', (member_id, name, role))
+        self.conn.commit()
+        print(f"{role.capitalize()} '{name}' registered with ID {member_id}.")
+        return True
+
+    def verify_member(self, member_id):
+        self.cursor.execute('SELECT * FROM Members WHERE MemberID = ?', (member_id,))
+        return self.cursor.fetchone()
+
+    def get_genres(self):
+        self.cursor.execute('SELECT DISTINCT Genre FROM Books')
+        return [row[0] for row in self.cursor.fetchall()]
+
+    def get_books_by_genre(self, genre):
+        self.cursor.execute('SELECT * FROM Books WHERE Genre = ? AND Quantity > 0', (genre,))
+        return self.cursor.fetchall()
+
+    def issue_book(self, member_id, book_id, days=14):
+        issue_date = datetime.now().strftime('%Y-%m-%d')
+        return_date = (datetime.now() + timedelta(days=days)).strftime('%Y-%m-%d')
+
+        self.cursor.execute('''
+            INSERT INTO Transactions (MemberID, BookID, IssueDate, ReturnDate)
+            VALUES (?, ?, ?, ?)
+        ''', (member_id, book_id, issue_date, return_date))
+
+        self.cursor.execute('UPDATE Books SET Quantity = Quantity - 1 WHERE BookID = ?', (book_id,))
+        self.conn.commit()
+
+        print(f"Book ID {book_id} issued to {member_id}. Due: {return_date}.")
+
+    def return_book(self, member_id, book_id):
+        self.cursor.execute('''
+            SELECT TransactionID, ReturnDate FROM Transactions 
+            WHERE MemberID = ? AND BookID = ? AND ActualReturnDate IS NULL
+        ''', (member_id, book_id))
+        transaction = self.cursor.fetchone()
+
+        if not transaction:
+            print("No active issue found.")
+            return
+
+        transaction_id, expected_return_date = transaction
+        actual_return_date = datetime.now().strftime('%Y-%m-%d')
+
+        expected = datetime.strptime(expected_return_date, '%Y-%m-%d')
+        actual = datetime.now()
+        fine = 0
+        if actual > expected:
+            fine = (actual - expected).days * 5
+
+        self.cursor.execute('''
+            UPDATE Transactions
+            SET ActualReturnDate = ?, Fine = ?
+            WHERE TransactionID = ?
+        ''', (actual_return_date, fine, transaction_id))
+
+        self.cursor.execute('UPDATE Books SET Quantity = Quantity + 1 WHERE BookID = ?', (book_id,))
+        self.conn.commit()
+
+        print(f"Returned Book ID {book_id}. Fine: Rs. {fine}")
+
+    def extend_due_date(self, member_id, book_id, extra_days=7):
+        self.cursor.execute('''
+            SELECT TransactionID, ReturnDate, Extended FROM Transactions 
+            WHERE MemberID = ? AND BookID = ? AND ActualReturnDate IS NULL
+        ''', (member_id, book_id))
+        transaction = self.cursor.fetchone()
+        if not transaction:
+            print("No active issue.")
+            return
+
+        transaction_id, return_date, extended = transaction
+        if extended:
+            print("Already extended once.")
+            return
+
+        new_return_date = (datetime.strptime(return_date, '%Y-%m-%d') + timedelta(days=extra_days)).strftime('%Y-%m-%d')
+        self.cursor.execute('''
+            UPDATE Transactions
+            SET ReturnDate = ?, Extended = 1
+            WHERE TransactionID = ?
+        ''', (new_return_date, transaction_id))
+        self.conn.commit()
+        print(f"Due date extended. New due: {new_return_date}.")
+
+    def show_member_history(self, member_id):
+        self.cursor.execute('''
+            SELECT t.TransactionID, b.Title, t.IssueDate, t.ReturnDate, t.ActualReturnDate, t.Fine
+            FROM Transactions t JOIN Books b ON t.BookID = b.BookID
+            WHERE t.MemberID = ?
+        ''', (member_id,))
+        rows = self.cursor.fetchall()
+
+        if not rows:
+            print("No transactions found.")
+            return
+
+        clean = [r for r in rows if r[4] and r[5] == 0]
+        card = "GOLD" if len(clean) >= 10 else "Standard"
+
+        print(f"History for {member_id}:")
+        for row in rows:
+            print(f"ID: {row[0]} | Book: {row[1]} | Issued: {row[2]} | Due: {row[3]} | Returned: {row[4]} | Fine: {row[5]}")
+        print(f"Membership Card: {card}")
+
+    def show_admin_report(self):
+        self.cursor.execute('SELECT COUNT(*) FROM Books')
+        total_books = self.cursor.fetchone()[0]
+
+        self.cursor.execute('SELECT COUNT(*) FROM Transactions WHERE ActualReturnDate IS NULL')
+        issued = self.cursor.fetchone()[0]
+
+        self.cursor.execute('SELECT SUM(Fine) FROM Transactions')
+        fines = self.cursor.fetchone()[0] or 0
+
+        self.cursor.execute('''
+            SELECT MemberID, COUNT(*) as Count FROM Transactions
+            GROUP BY MemberID ORDER BY Count DESC LIMIT 5
+        ''')
+        top_members = self.cursor.fetchall()
+
+        print(f"Total Books: {total_books}")
+        print(f"Books Issued Now: {issued}")
+        print(f"Fines Collected: Rs. {fines}")
+        print("Top Members:")
+        for m in top_members:
+            print(f"{m[0]} - {m[1]} books")
+# This cell initializes the database, creates the tables, and inserts 50 sample books into the library.
+db = DatabaseManager()
+db.create_tables()
+
+books = [
+    (1, "Harry Potter", "J.K. Rowling", "Fantasy", 5),
+    (2, "Lord of the Rings", "J.R.R. Tolkien", "Fantasy", 5),
+    (3, "Hobbit", "J.R.R. Tolkien", "Fantasy", 4),
+    (4, "Dune", "Frank Herbert", "Sci-Fi", 6),
+    (5, "Neuromancer", "William Gibson", "Sci-Fi", 3),
+    (6, "Brave New World", "Aldous Huxley", "Sci-Fi", 4),
+    (7, "1984", "George Orwell", "Classics", 5),
+    (8, "To Kill a Mockingbird", "Harper Lee", "Classics", 5),
+    (9, "Pride and Prejudice", "Jane Austen", "Romance", 4),
+    (10, "Jane Eyre", "Charlotte Bronte", "Romance", 3),
+    (11, "Sherlock Holmes", "Arthur Conan Doyle", "Mystery", 6),
+    (12, "Murder on the Orient Express", "Agatha Christie", "Mystery", 5),
+    (13, "Dracula", "Bram Stoker", "Horror", 4),
+    (14, "Frankenstein", "Mary Shelley", "Horror", 4),
+    (15, "IT", "Stephen King", "Horror", 3),
+    (16, "Batman: Year One", "Frank Miller", "Comics", 5),
+    (17, "Spider-Man: Blue", "Jeph Loeb", "Comics", 5),
+    (18, "Watchmen", "Alan Moore", "Comics", 4),
+    (19, "Sapiens", "Yuval Noah Harari", "History", 4),
+    (20, "Homo Deus", "Yuval Noah Harari", "History", 4),
+    (21, "A Brief History of Time", "Stephen Hawking", "Science", 4),
+    (22, "Cosmos", "Carl Sagan", "Science", 4),
+    (23, "The Selfish Gene", "Richard Dawkins", "Science", 3),
+    (24, "Clean Code", "Robert Martin", "Technology", 5),
+    (25, "The Pragmatic Programmer", "Andrew Hunt", "Technology", 5),
+    (26, "Deep Learning", "Ian Goodfellow", "Technology", 4),
+    (27, "Atomic Habits", "James Clear", "Self-help", 6),
+    (28, "Think and Grow Rich", "Napoleon Hill", "Self-help", 5),
+    (29, "The Power of Habit", "Charles Duhigg", "Self-help", 5),
+    (30, "Steve Jobs", "Walter Isaacson", "Biography", 4),
+    (31, "Long Walk to Freedom", "Nelson Mandela", "Biography", 3),
+    (32, "Becoming", "Michelle Obama", "Biography", 4),
+    (33, "The Art of War", "Sun Tzu", "Philosophy", 4),
+    (34, "Meditations", "Marcus Aurelius", "Philosophy", 3),
+    (35, "The Republic", "Plato", "Philosophy", 3),
+    (36, "Treasure Island", "Robert Louis Stevenson", "Adventure", 5),
+    (37, "Journey to the Center of the Earth", "Jules Verne", "Adventure", 4),
+    (38, "Moby Dick", "Herman Melville", "Adventure", 4),
+    (39, "Great Expectations", "Charles Dickens", "Classics", 4),
+    (40, "Wuthering Heights", "Emily Bronte", "Classics", 4),
+    (41, "Emma", "Jane Austen", "Romance", 3),
+    (42, "Sense and Sensibility", "Jane Austen", "Romance", 3),
+    (43, "Gone Girl", "Gillian Flynn", "Mystery", 4),
+    (44, "The Girl with the Dragon Tattoo", "Stieg Larsson", "Mystery", 4),
+    (45, "Pet Sematary", "Stephen King", "Horror", 3),
+    (46, "The Shining", "Stephen King", "Horror", 3),
+    (47, "X-Men: Days of Future Past", "Chris Claremont", "Comics", 3),
+    (48, "Iron Man: Extremis", "Warren Ellis", "Comics", 3),
+    (49, "Rich Dad Poor Dad", "Robert Kiyosaki", "Self-help", 5),
+    (50, "The Subtle Art of Not Giving a F*ck", "Mark Manson", "Self-help", 5)
+]
+
+for book in books:
+    db.insert_book(*book)
+
+print("50 books inserted.")
+# This cell handles user login or registration and provides a simple menu for staff or members.
+# Staff can view an admin report; members can issue, return, extend, and view their borrowing history.
+
+# LOGIN / REGISTER
+role = input("Are you a 'member' or 'staff'? ").strip().lower()
+member_id = input("Enter your ID: ").strip()
+member = db.verify_member(member_id)
+
+if member:
+    print(f"Welcome back, {member[1]} ({member[2]})")
+else:
+    name = input("Enter your name to register: ").strip()
+    passkey = None
+    if role == 'staff':
+        passkey = input("Enter staff passkey: ").strip()
+    success = db.register_member(member_id, name, role, passkey)
+    if not success:
+        raise Exception("Registration failed.")
+
+# MENU
+if role == 'staff':
+    # If staff, show admin report directly
+    db.show_admin_report()
+else:
+    # If member, show menu for issuing/returning/extending books or viewing history
+    while True:
+        print("\nWhat would you like to do?")
+        print("1. Issue a new book")
+        print("2. Return a book")
+        print("3. Extend due date")
+        print("4. View my history")
+        print("5. Exit")
+
+        choice = input("Enter choice number: ").strip()
+
+        if choice == '1':
+            # Issue a new book
+            genres = db.get_genres()
+            if not genres:
+                print("No genres found.")
+                continue
+
+            print("\nAvailable Genres:")
+            for idx, g in enumerate(genres, start=1):
+                print(f"{idx}. {g}")
+
+            while True:
+                genre_choice = input("Select genre number: ").strip()
+                if genre_choice.isdigit():
+                    genre_choice = int(genre_choice)
+                    if 1 <= genre_choice <= len(genres):
+                        break
+                    else:
+                        print("Invalid number, please choose again.")
+                else:
+                    print("Please enter a valid number.")
+
+            selected = genres[genre_choice - 1]
+            books = db.get_books_by_genre(selected)
+
+            if not books:
+                print("No books available in this genre.")
+            else:
+                print(f"\nBooks in {selected}:")
+                for b in books:
+                    print(f"ID: {b[0]} | {b[1]} by {b[2]} | Qty: {b[4]}")
+                while True:
+                    book_id_input = input("Enter Book ID to issue: ").strip()
+                    if book_id_input.isdigit():
+                        book_id = int(book_id_input)
+                        db.issue_book(member_id, book_id)
+                        break
+                    else:
+                        print("Invalid Book ID. Please enter a number.")
+
+        elif choice == '2':
+            # Return a book
+            db.cursor.execute('''
+                SELECT t.BookID, b.Title, t.IssueDate, t.ReturnDate
+                FROM Transactions t
+                JOIN Books b ON t.BookID = b.BookID
+                WHERE t.MemberID = ? AND t.ActualReturnDate IS NULL
+            ''', (member_id,))
+            issued_books = db.cursor.fetchall()
+
+            if not issued_books:
+                print("You have no active books to return.")
+            else:
+                print("\nBooks you have issued:")
+                for b in issued_books:
+                    print(f"ID: {b[0]} | {b[1]} | Issued on: {b[2]} | Due: {b[3]}")
+                while True:
+                    book_id_input = input("Enter Book ID to return: ").strip()
+                    if book_id_input.isdigit():
+                        book_id = int(book_id_input)
+                        db.return_book(member_id, book_id)
+                        break
+                    else:
+                        print("Invalid Book ID.")
+
+        elif choice == '3':
+            # Extend due date for a book
+            book_id_input = input("Enter Book ID to extend due date: ").strip()
+            if book_id_input.isdigit():
+                book_id = int(book_id_input)
+                db.extend_due_date(member_id, book_id)
+            else:
+                print("Invalid Book ID.")
+
+        elif choice == '4':
+            # View borrowing history
+            db.show_member_history(member_id)
+
+        elif choice == '5':
+            print("Logged out.")
+            break
+
+        else:
+            print("Invalid choice. Try again.")
